@@ -1,0 +1,14 @@
+{
+  "name": "bot-trade-fx",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "https://manhchu97@github.com/manhchu97/bot-trade-fx.git",
+  "author": "manh chu the <manhchu@fetch.tech>",
+  "license": "MIT",
+  "scripts": {
+    "dev": "nodemon node index.js"
+  },
+  "dependencies": {
+    "nodemon": "^3.1.5"
+  }
+}
