@@ -3,98 +3,113 @@ const TelegramBot = require("node-telegram-bot-api");
 const token = process.env.TELEGRAM_TOKEN;
 const bot = new TelegramBot(token, { polling: true });
 const Net = require("net");
-const client_cmd = new Net.Socket();
-const volume = 0.02;
+const dayjs =require('dayjs')
+
+
 function parseTradeMessage(text) {
   const lines = text.split("\n").filter((item) => item);
 
-  if (lines.length < 3) {
-    return { error: "Sai cú pháp: Tin nhắn không đầy đủ thông tin." };
-  }
+  const pairRegex = /PAIR:\s*#(\w+)/i;
+  const typeRegex = /TYPE:\s+(\w+)/i;
+  const slRegex = /🔻\s*SL:\s+([\d.]+)/i;
+  const entryRegex = /🔹ENTRY:\s*(.+)/i;
 
-  const tpRegex = /tp (\d+(\.\d+)?)/i;
-  const slRegex = /sl (\d+(\.\d+)?)/i;
-  const code = lines[0];
-  const sellBuyLine = lines[1];
-  const entryPointRegex = /(sell|buy) (\d+(\.\d+)?)/i;
-  const matchEntry = sellBuyLine.match(entryPointRegex);
-  if (!matchEntry) {
-    return {
-      error:
-        'Sai cú pháp: Cần có thông tin "Sell" hoặc "Buy" và điểm vào lệnh.',
-    };
-  }
-
-  const type = matchEntry[1].toLowerCase();
-  let tps = [];
+  let pair = null;
+  let type = null;
   let sl = null;
+  let entryPrices = [];
 
   lines.forEach((line) => {
-    const tpMatch = line.match(tpRegex);
-    if (tpMatch) {
-      tps.push(tpMatch[1]);
+    // Tìm và lưu cặp giao dịch (PAIR)
+    const pairMatch = line.match(pairRegex);
+    if (pairMatch) {
+      pair = pairMatch[1].toUpperCase();
     }
 
+    // Tìm và lưu loại giao dịch (TYPE)
+    const typeMatch = line.match(typeRegex);
+    if (typeMatch) {
+      type = typeMatch[1].toUpperCase();
+    }
+
+    // Tìm và lưu giá trị SL
     const slMatch = line.match(slRegex);
     if (slMatch) {
-      sl = slMatch[1];
+      sl = parseFloat(slMatch[1]);
+    }
+
+    // Tìm và lưu các giá trị ENTRY
+    const entryMatch = line.match(entryRegex);
+    if (entryMatch) {
+      // Thay thế "🔹ENTRY: " và nối các giá trị lại với nhau
+      entryPrices = entryMatch[1].trim().split(" ").map(price => parseFloat(price));
     }
   });
 
-  if (tps.length === 0) {
-    return { error: "Sai cú pháp: Cần có ít nhất một giá trị Tp." };
+  // Kiểm tra xem có đủ thông tin hay khôngs
+  if (!pair || !type || entryPrices.length === 0) {
+    return { error: "Sai cú pháp: Cần có thông tin đầy đủ." };
   }
 
-  const result = [];
-  for (const tp of tps) {
-    const data = {
-      MSG: "ORDER_SEND",
-      SYMBOL: code.toUpperCase(),
-      VOLUME: volume,
-      TYPE: `ORDER_TYPE_${type.toUpperCase()}`,
-      TP: tp,
-    };
 
-    if (sl) {
-      data.SL = sl;
-    }
-    result.push(data);
-  }
+  const result = entryPrices.map(price => ({
+    MSG: "ORDER_SEND",
+    SYMBOL: pair,
+    VOLUME: parseFloat(process.env.VOLUME),
+    TYPE: `ORDER_TYPE_${type}_LIMIT`,
+    PRICE: price,
+    EXPIRATION: dayjs().add(1, 'day').format('YYYY.MM.DD HH:mm:ss'),
+    SL: sl 
+  }));
 
   return {
-    data: result,
+    data: result
   };
 }
 
-const sendOrders = (orders, callback) => {
-  const client_cmd = new Net.Socket();
-  client_cmd.connect(77, "localhost", function () {
-    let completed = 0;
-    console.log("Connect to server MTSocketApi !");
-    orders.forEach((order) => {
+
+
+
+
+
+const sendOrder = (order) => {
+  return new Promise((resolve, reject) => {
+    const client_cmd = new Net.Socket();
+
+    client_cmd.connect(77, "localhost", function () {
+      console.log("Connected to server MTSocketApi!");
       const message = JSON.stringify(order) + "\r\n";
       client_cmd.write(message);
     });
-  });
 
-  client_cmd.on("data", function (chunk) {
-    completed++;
-    // Nếu đã nhận tất cả phản hồi
-    if (completed === orders.length) {
+    client_cmd.on("data", function (chunk) {
+      client_cmd.end(); // Đóng socket sau khi nhận dữ liệu
+      resolve(); // Gọi resolve khi hoàn thành
+    });
+
+    client_cmd.on("error", function (error) {
+      console.error("Socket error:", error);
       client_cmd.end();
-      callback({
-        isSuccess: true,
-      });
-    }
-  });
-
-  client_cmd.on("error", function (error) {
-    console.error("Socket error:", error);
-    callback({
-      isSuccess: false,
-      msg: "Không thể connect được socket !",
+      reject(error); // Gọi reject khi có lỗi
     });
   });
+};
+
+const sendOrders = async (orders, callback) => {
+  console.log(orders);
+  try {
+    for (const order of orders) {
+      await sendOrder(order);
+    }
+    callback({
+      isSuccess: true,
+    });
+  } catch (error) {
+    callback({
+      isSuccess: false,
+      msg: "Có lỗi xảy ra khi gửi đơn hàng!",
+    });
+  }
 };
 
 bot.on("message", (msg) => {
@@ -104,10 +119,12 @@ bot.on("message", (msg) => {
   if (orders.error) {
     bot.sendMessage(chatId, `Lỗi: ${orders.error}`);
   } else {
-    sendOrders(orders, (responses) => {
+    sendOrders(orders.data, (responses) => {
       if (!responses.isSuccess) {
         return bot.sendMessage(chatId, responses.msg);
       }
+      return bot.sendMessage(chatId, 'Đã xử lý xong order !!!');``
+
     });
   }
 });
